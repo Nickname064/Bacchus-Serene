@@ -1,11 +1,13 @@
 mod bacchus;
 mod events;
+mod bacchus_handler;
 
 use crate::bacchus::{event, Data};
 use crate::events::{create_tables, DatabasePool};
 use dotenv::dotenv;
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::GatewayIntents;
+use crate::bacchus_handler::{BacchusHandler, DBWrapper};
 
 #[tokio::main]
 async fn main() {
@@ -21,6 +23,8 @@ async fn main() {
         .expect("Failed to open db");
     create_tables(&conn.get().unwrap()).expect("Couldn't initialize tables");
 
+    let conn2 = conn.clone();
+
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![event()],
@@ -29,15 +33,21 @@ async fn main() {
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                Ok(Data { conn })
+                Ok(Data { conn: conn2 }) //Share the db with the command handlers
             })
         })
         .build();
 
     let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
+        .event_handler(BacchusHandler)
         .await
         .expect("Error creating client");
+
+    // Share the DB with the event handlers
+    let mut data = client.data.write().await;
+    data.insert::<DBWrapper>(DBWrapper{pool: conn});
+    drop(data);
 
     client.start().await.unwrap();
 }
