@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 pub type SqlitePool = Pool<SqliteConnectionManager>;
 pub type PooledSqliteConnection = PooledConnection<SqliteConnectionManager>;
+
+#[derive(Clone)]
 pub struct DatabasePool(Arc<SqlitePool>);
 impl DatabasePool {
     pub fn new(database_url: &str) -> Result<Self, r2d2::Error> {
@@ -32,6 +34,7 @@ pub struct EventData {
     pub(crate) manager_role_id: u64,
     pub(crate) participant_role_id: u64,
     pub(crate) manifest_id: u64,
+    pub(crate) manifest_channel_id: u64,
     pub(crate) category_id: u64
 }
 
@@ -62,6 +65,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
                     MANAGER_ROLE_ID INTEGER NOT NULL,
                     PARTICIPANT_ROLE_ID INTEGER NOT NULL,
                     MANIFEST_ID INTEGER NOT NULL,
+                    MANIFEST_CHANNEL_ID INTEGER NOT NULL,
                     CATEGORY_ID INTEGER NOT NULL
           )"#,
         (),
@@ -94,8 +98,9 @@ pub fn insert_event(conn: &Connection, data: EventData) -> Result<i64> {
         MANAGER_ROLE_ID,
         PARTICIPANT_ROLE_ID,
         MANIFEST_ID,
+        MANIFEST_CHANNEL_ID,
         CATEGORY_ID
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
         params![
             data.name,
             data.short_description,
@@ -107,6 +112,7 @@ pub fn insert_event(conn: &Connection, data: EventData) -> Result<i64> {
             data.manager_role_id,
             data.participant_role_id,
             data.manifest_id,
+            data.manifest_channel_id,
             data.category_id
         ],
     )?;
@@ -142,7 +148,7 @@ pub fn get_channels_by_event_id(conn: &Connection, event_id: i64) -> Result<Vec<
 
 /// Returns Ok(number of affected rows) if all went well
 pub fn delete_event(conn: &Connection, event_id: i64) -> Result<usize> {
-    conn.execute(r#"DELETE FROM CHANNELS WHERE ID=?1"#, params![event_id])
+    conn.execute(r#"DELETE FROM CHANNELS WHERE EVENT_ID=?1"#, params![event_id])
 }
 
 /// Returns Ok((Event_ID, Event_Data)) if an event owns channel [channel_id]
@@ -167,7 +173,30 @@ pub fn get_event_by_channel(conn: &Connection, channel_id: u64) -> Result<(i64, 
                 manager_role_id: row.get(8)?,
                 participant_role_id: row.get(9)?,
                 manifest_id: row.get(10)?,
-                category_id: row.get(11)?
+                manifest_channel_id: row.get(11)?,
+                category_id: row.get(12)?
+            },
+        ))
+    })
+}
+
+pub fn get_event_by_manifest(conn: &Connection, manifest_id: u64) -> Result<(i64, EventData)> {
+    conn.query_row(r#"SELECT * FROM EVENTS WHERE MANIFEST_ID=?1"#, params![manifest_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            EventData {
+                name: row.get(1)?,
+                short_description: row.get(2)?,
+                description: row.get(3)?,
+                thumbnail: row.get(4)?,
+                picture: row.get(5)?,
+                max_participants: row.get(6)?,
+                server_id: row.get(7)?,
+                manager_role_id: row.get(8)?,
+                participant_role_id: row.get(9)?,
+                manifest_id: row.get(10)?,
+                manifest_channel_id: row.get(11)?,
+                category_id: row.get(12)?
             },
         ))
     })
@@ -189,7 +218,8 @@ pub fn get_all_events(conn: &Connection) -> Result<Vec<(i64, EventData)>> {
                     manager_role_id: row.get(8)?,
                     participant_role_id: row.get(9)?,
                     manifest_id: row.get(10)?,
-                    category_id: row.get(11)?,
+                    manifest_channel_id: row.get(11)?,
+                    category_id: row.get(12)?,
                 },
             ))
         })?;
