@@ -44,6 +44,11 @@ struct Channel {
     channel_id: u64,
 }
 
+struct Server{
+    server_id: u64,
+    event_creator_role_id: u64
+}
+
 pub fn create_connection<P: AsRef<Path>>(path: P) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute("PRAGMA foreign_keys = ON;", [])?;
@@ -78,6 +83,14 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             FOREIGN KEY(EVENT_ID) REFERENCES EVENTS(ID) ON DELETE CASCADE
         );"#,
         (),
+    )?;
+
+    conn.execute(
+        r#" CREATE TABLE IF NOT EXISTS SERVERS (
+            SERVER_ID INTEGER PRIMARY KEY,
+            EVENT_CREATOR_ROLE_ID NOT NULL
+        )"#,
+        ()
     )?;
 
     Ok(())
@@ -225,4 +238,28 @@ pub fn get_all_events(conn: &Connection) -> Result<Vec<(i64, EventData)>> {
         })?;
 
     Ok(event_iter.filter(|x| x.is_ok()).map(|x| x.unwrap()).collect())
+}
+
+
+pub fn insert_server_manager_role(conn: &Connection, server_id: u64, role_id: u64) -> Result<()>{
+    conn.execute(r#"INSERT INTO SERVERS(
+        SERVER_ID,
+        EVENT_CREATOR_ROLE_ID
+    ) VALUES (?1, ?2)"#,
+    params![server_id, role_id]
+    )?;
+
+    Ok(())
+}
+
+pub fn get_server_manager_role_id(conn: &Connection, server_id : u64) -> Result<u64>{
+    conn.query_row(r#"SELECT EVENT_CREATOR_ROLE_ID FROM SERVERS WHERE SERVER_ID=?"#, params![server_id],
+    |row| {
+        Ok(row.get(0)?)
+    })
+}
+
+pub fn delete_server_manager_role(conn: &Connection, server_id: u64) -> Result<()> {
+    conn.execute(r#"DELETE FROM SERVERS WHERE SERVER_ID=?"#, params![server_id])?;
+    Ok(())
 }

@@ -2,7 +2,7 @@ mod bacchus;
 mod events;
 mod bacchus_handler;
 
-use crate::bacchus::{event, Data};
+use crate::bacchus::{event, init, Data};
 use crate::events::{create_tables, DatabasePool};
 use dotenv::dotenv;
 use poise::serenity_prelude as serenity;
@@ -27,7 +27,7 @@ async fn main() {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![event()],
+            commands: vec![event(), init()],
             ..Default::default()
         })
         .setup(|ctx, _ready, framework| {
