@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::events::{delete_event, get_all_events, get_channels_by_event_id, get_event_by_channel, insert_channels, insert_event, DatabasePool, EventData};
+use crate::events::{delete_event, delete_server_manager_role, get_all_events, get_channels_by_event_id, get_event_by_channel, get_server_manager_role_id, insert_channels, insert_event, insert_server_manager_role, DatabasePool, EventData};
 use futures::future::try_join_all;
 use poise::serenity_prelude::{Attachment, ChannelType, CreateChannel, CreateEmbed, CreateEmbedFooter, CreateMessage, EditRole, PermissionOverwrite, PermissionOverwriteType, Permissions, Role, RoleId, User};
 use poise::serenity_prelude::ChannelId;
@@ -18,7 +18,7 @@ pub async fn event(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Creates a new event, and sends a poll for people to enlist
-#[poise::command(prefix_command, slash_command)]
+#[poise::command(prefix_command, slash_command, required_permissions="MANAGE_CHANNELS")]
 async fn create(
     ctx: Context<'_>,
     #[description = "How shall this event be named ?"] name: String,
@@ -37,6 +37,17 @@ async fn create(
         .ok_or(Error::from("That command can only be ran in a server"))?;
     let http = ctx.http();
 
+    let creator_role_id = RoleId::from(get_server_manager_role_id(
+        &ctx.data().conn.get().unwrap(),
+        u64::from(guild_id)).expect("Server doesn't have a role for creating events.\nPlease call /init")
+    );
+
+    // Only people with the event creator role can create events
+    if ! ctx.author().has_role(ctx.http(), guild_id, creator_role_id).await.unwrap() {
+        let _ = ctx.reply("You do not have the required permissions to create events").await;
+        return Ok(());
+    }
+
     let created_roles: Vec<Role> = try_join_all(vec![
         guild_id.create_role(
             ctx.http(),
@@ -50,6 +61,8 @@ async fn create(
     .collect();
 
     let (manager, player) = (&created_roles[0], &created_roles[1]);
+
+    println!("Created two roles for new {} event on server {}", name, guild_id);
 
     let member = guild_id.member(&http, ctx.author().id).await?;
     member.add_role(&http, manager).await?;
@@ -92,6 +105,8 @@ async fn create(
         CreateChannel::new(&name).permissions(channel_permissions.clone()).kind(ChannelType::Category)
     ).await?;
 
+    println!("Created category for new event {} on server {}", name, guild_id);
+
     // Create channel
     let general_channel = guild_id
         .create_channel(
@@ -99,6 +114,8 @@ async fn create(
             CreateChannel::new("general").permissions(channel_permissions).category(category.id),
         )
         .await?;
+
+    println!("Created new general text channel for event {} on server {}", name, guild_id);
 
     let mut embed = CreateEmbed::new()
         .title(&name)
@@ -121,12 +138,16 @@ async fn create(
     let builder = CreateMessage::new().embed(embed).content(":trumpet: :trumpet: :trumpet: NEW EVENT :trumpet: :trumpet: :trumpet:");
     let answer = ctx.channel_id().send_message(ctx.http(), builder).await?;
 
+    println!("Posted embed regarding new event {} on server {}", name, guild_id);
+
     answer.react(ctx.http(), '✅').await?;
+
+    println!("Reacted to embed regarding new event {} on server {}", name, guild_id);
 
     let event_id = insert_event(
         &ctx.data().conn.get().unwrap(),
         EventData {
-            name,
+            name : name.clone(),
             short_description,
             description,
             thumbnail: thumbnail.map(|x| x.url),
@@ -142,7 +163,11 @@ async fn create(
         },
     )?;
 
+    println!("Inserted new event {} from server {} in database", name.clone(), guild_id);
+
     insert_channels(&ctx.data().conn.get().unwrap(), event_id, vec![u64::from(general_channel.id)])?;
+
+    println!("Inserted new channels related to event {} from server {} in database", name, guild_id);
 
     Ok(())
 }
@@ -156,6 +181,14 @@ async fn delete(ctx: Context<'_>) -> Result<(), Error> {
     let http = ctx.http();
     let guild_id = ctx.guild_id().expect("This command can only be ran in a server");
 
+    // REQUIRE MANAGER ROLE
+    /*
+    if !ctx.author().has_role(ctx.http(), guild_id, RoleId::from(event.manager_role_id)).await.unwrap_or(false) {
+        ctx.reply("You do not have the required permissions to delete this event").await?;
+        return Ok(());
+    }
+    */
+
     ctx.reply(format!("Deleting event {}. Goodbye !", event.name)).await?;
 
     try_join_all(vec![
@@ -163,15 +196,23 @@ async fn delete(ctx: Context<'_>) -> Result<(), Error> {
         guild_id.delete_role(http, RoleId::from(event.participant_role_id))
     ]).await?;
 
+    println!("Deleted event roles for {} on server {}", event.name, u64::from(guild_id));
+
     //Delete owned channels + category
     let channels_ids = get_channels_by_event_id(&ctx.data().conn.get().expect("Couldnt get a reference to database"), id)?;
     try_join_all(channels_ids.iter().chain(vec![event.category_id].iter()).map(|x| ChannelId::new(*x).delete(http) )).await?;
+
+    println!("Deleted channels related to event {} on server {}", event.name, u64::from(guild_id));
 
     // Delete manifest
     // Ignore result, it will fail if no manifest exist, which is acceptable as well
     let _ = ChannelId::from(event.manifest_channel_id).delete_message(http, event.manifest_id).await;
 
+    println!("Deleted event {} from server {}", event.name, guild_id);
+
     delete_event(&ctx.data().conn.get().unwrap(), id)?;
+
+    println!("Wiped event {}, id {} from database", event.name, id);
 
     Ok(())
 }
@@ -217,6 +258,7 @@ async fn add(ctx: Context<'_>, user: User) -> Result<(), Error>{
     guild_id.member(http, user.id).await?.add_role(http, player_role).await?;
 
     ctx.reply(format!("Granted participation rights to {}", user.name)).await?;
+    println!("Granted participation rights to {}", user.name);
 
     Ok(())
 }
@@ -244,6 +286,7 @@ async fn remove(ctx: Context<'_>, user: User) -> Result<(), Error>{
 
 
     ctx.reply(format!("Stripped participation rights from {}", user.name)).await?;
+    println!("Stripped participation rights from {}", user.name);
 
     Ok(())
 }
@@ -268,7 +311,58 @@ async fn add_manager(ctx: Context<'_>, user: User) -> Result<(), Error>{
 
 
     ctx.reply(format!("Granted admin rights to {} (for this event only)", user.name)).await?;
+    println!("Granted admin rights to {} (for this event only)", user.name);
 
     Ok(())
 }
 
+/// Creates the relevant role and server data for this server. Call this once before using the bot
+#[poise::command(prefix_command, slash_command)]
+pub async fn init(ctx: Context<'_>) -> Result<(), Error>{
+
+    let http = ctx.http();
+    let guild_id = ctx.guild_id().expect("This command can only be ran in a server");
+
+    match get_server_manager_role_id(
+        &ctx.data().conn.get().unwrap(),
+        u64::from(guild_id)
+    ) {
+        Ok(id) => {
+
+            let role_id = RoleId::from(id);
+            let role_set = guild_id.roles(ctx.http()).await.unwrap();
+
+            match role_set.get(&role_id) {
+                Some(role) => {
+                    let _ = ctx.reply(format!("Server is already initialized.\nGrant someone the [{}] role to allow them to create events",
+                    role.name)).await;
+                    return Ok(());
+                }
+                None => {
+                    println!("Event creator role has been deleted from server {}, wiping from database and recreating ...", u64::from(guild_id));
+                    let _ = delete_server_manager_role(&ctx.data().conn.get().unwrap(), u64::from(guild_id));
+                }
+            }
+        }
+        Err(_) => {}
+    }
+
+    let menad = guild_id.create_role(
+        ctx.http(),
+        EditRole::new().name("Menad")
+    ).await.expect("Couldn't create role. Please try again");
+
+    println!("Created event creator role on server {}", u64::from(guild_id));
+
+    insert_server_manager_role(
+        &ctx.data().conn.get().unwrap(),
+        u64::from(guild_id),
+        u64::from(menad.id)
+    ).expect("Couldn't write new MENAD role to database. Please delete the role and call /init again");
+
+    println!("Wrote new role to database");
+
+    let _ = ctx.reply("Server initialized successfully !").await;
+
+    Ok(())
+}
